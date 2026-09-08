@@ -10,11 +10,11 @@ Daily Environmental Innovation/Impact News Report
    stories by real-world impact/innovation and writes a short digest.
 4. Emails the digest via SMTP (works with Gmail app passwords, or any SMTP
    provider like SendGrid/Mailgun).
-
+ 
 Run manually with:  python main.py
 Scheduled daily via GitHub Actions (see .github/workflows/daily-report.yml)
 """
-
+ 
 import json
 import os
 import smtplib
@@ -24,13 +24,13 @@ from datetime import datetime, timezone
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from urllib.parse import quote_plus
-
+ 
 import feedparser
-
+ 
 # ---------------------------------------------------------------------------
 # CONFIG
 # ---------------------------------------------------------------------------
-
+ 
 # Trusted, curated RSS feeds. Add/remove freely.
 TRUSTED_FEEDS = [
     "https://www.theguardian.com/environment/rss",
@@ -41,7 +41,7 @@ TRUSTED_FEEDS = [
     "https://e360.yale.edu/feed.xml",
     "https://www.sciencedaily.com/rss/earth_climate.xml",
 ]
-
+ 
 # Broad search terms, pulled via Google News RSS (free, no API key required)
 SEARCH_TERMS = [
     "environmental innovation",
@@ -49,23 +49,23 @@ SEARCH_TERMS = [
     "renewable energy milestone",
     "conservation success story",
 ]
-
+ 
 GOOGLE_NEWS_RSS = "https://news.google.com/rss/search?q={query}&hl=en-US&gl=US&ceid=US:en"
-
+ 
 MAX_ARTICLES_TO_CLAUDE = 40      # cap how many raw articles we send to Claude
 TOP_STORIES_COUNT = 7            # how many stories to feature in the email
-
+ 
 EMAIL_FROM = os.environ["EMAIL_FROM"]
 EMAIL_TO = os.environ["EMAIL_TO"]
 EMAIL_PASSWORD = os.environ["EMAIL_PASSWORD"]  # app password, not your real password
 SMTP_HOST = os.environ.get("SMTP_HOST", "smtp.gmail.com")
 SMTP_PORT = int(os.environ.get("SMTP_PORT", "465"))
-
-
+ 
+ 
 # ---------------------------------------------------------------------------
 # STEP 1: COLLECT ARTICLES
 # ---------------------------------------------------------------------------
-
+ 
 def fetch_trusted_feeds():
     """Pull recent entries from the curated RSS feed list."""
     articles = []
@@ -83,8 +83,8 @@ def fetch_trusted_feeds():
         except Exception as e:
             print(f"[warn] failed to fetch {url}: {e}")
     return articles
-
-
+ 
+ 
 def fetch_search_results():
     """Pull recent entries from a broad Google News RSS search."""
     articles = []
@@ -102,8 +102,8 @@ def fetch_search_results():
         except Exception as e:
             print(f"[warn] failed to search '{term}': {e}")
     return articles
-
-
+ 
+ 
 def dedupe(articles):
     seen_titles = set()
     unique = []
@@ -113,20 +113,20 @@ def dedupe(articles):
             seen_titles.add(key)
             unique.append(a)
     return unique
-
-
+ 
+ 
 # ---------------------------------------------------------------------------
 # STEP 2: RANK + SUMMARIZE WITH CLAUDE
 # ---------------------------------------------------------------------------
-
+ 
 def build_claude_prompt(articles):
     lines = []
     for i, a in enumerate(articles):
         lines.append(f"[{i}] TITLE: {a['title']}\nSOURCE: {a['source']}\nLINK: {a['link']}\nSNIPPET: {a['summary']}\n")
     article_block = "\n".join(lines)
-
+ 
     return f"""You are curating a daily email digest on environmental innovation and impact.
-
+ 
 Below is a list of candidate articles (index, title, source, link, snippet).
 Select the {TOP_STORIES_COUNT} stories that represent the most significant
 real-world environmental innovation, impact, or progress today. Prioritize:
@@ -134,26 +134,26 @@ real-world environmental innovation, impact, or progress today. Prioritize:
 - Meaningful policy or market shifts
 - Avoid duplicate stories covering the same event
 - Avoid vague opinion pieces with no news content
-
+ 
 Return ONLY valid JSON (no markdown fences, no preamble), as a list of objects:
 [
   {{"index": <int>, "headline": "<punchy 8-12 word headline>", "why_it_matters": "<2-3 sentence summary of the story and its significance>"}}
 ]
-
+ 
 CANDIDATE ARTICLES:
 {article_block}
 """
-
-
+ 
+ 
 def call_claude(prompt):
     """
     Calls Claude via the Claude Code CLI instead of the raw Anthropic API.
     This is billed under your Claude Pro/Max/Team/Enterprise subscription
     (via CLAUDE_CODE_OAUTH_TOKEN), NOT pay-per-token API credits.
-    --bare skips loading hooks/skills/CLAUDE.md for a clean, fast CI run.
+    Note: --bare mode does NOT read CLAUDE_CODE_OAUTH_TOKEN, so we don't use it here.
     """
     result = subprocess.run(
-        ["claude", "-p", "--output-format", "json", "--bare"],
+        ["claude", "-p", "--output-format", "json"],
         input=prompt,
         capture_output=True,
         text=True,
@@ -165,19 +165,19 @@ def call_claude(prompt):
             f"--- stderr ---\n{result.stderr}\n"
             f"--- stdout ---\n{result.stdout}"
         )
-
+ 
     data = json.loads(result.stdout)
     if data.get("is_error"):
         raise RuntimeError(f"Claude Code returned an error: {data.get('result')}")
     return data["result"]
-
-
+ 
+ 
 def parse_ranked_stories(raw_text, articles):
     cleaned = raw_text.strip().strip("`")
     if cleaned.lower().startswith("json"):
         cleaned = cleaned[4:].strip()
     ranked = json.loads(cleaned)
-
+ 
     stories = []
     for item in ranked:
         idx = item["index"]
@@ -189,12 +189,12 @@ def parse_ranked_stories(raw_text, articles):
                 "source": articles[idx]["source"],
             })
     return stories
-
-
+ 
+ 
 # ---------------------------------------------------------------------------
 # STEP 3: BUILD + SEND EMAIL
 # ---------------------------------------------------------------------------
-
+ 
 def build_email_html(stories):
     date_str = datetime.now(timezone.utc).strftime("%B %d, %Y")
     rows = ""
@@ -211,7 +211,7 @@ def build_email_html(stories):
           </td>
         </tr>
         """
-
+ 
     return f"""
     <html>
     <body style="font-family:-apple-system,Segoe UI,Roboto,sans-serif; background:#f9fafb; margin:0; padding:24px;">
@@ -232,8 +232,8 @@ def build_email_html(stories):
     </body>
     </html>
     """
-
-
+ 
+ 
 def send_email(html_body):
     date_str = datetime.now(timezone.utc).strftime("%b %d, %Y")
     msg = MIMEMultipart("alternative")
@@ -241,44 +241,44 @@ def send_email(html_body):
     msg["From"] = EMAIL_FROM
     msg["To"] = EMAIL_TO
     msg.attach(MIMEText(html_body, "html"))
-
+ 
     context = ssl.create_default_context()
     with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, context=context) as server:
         server.login(EMAIL_FROM, EMAIL_PASSWORD)
         server.sendmail(EMAIL_FROM, EMAIL_TO, msg.as_string())
-
-
+ 
+ 
 # ---------------------------------------------------------------------------
 # MAIN
 # ---------------------------------------------------------------------------
-
+ 
 def main():
     print("Fetching trusted feeds...")
     trusted = fetch_trusted_feeds()
     print(f"  -> {len(trusted)} articles")
-
+ 
     print("Fetching broad search results...")
     searched = fetch_search_results()
     print(f"  -> {len(searched)} articles")
-
+ 
     all_articles = dedupe(trusted + searched)[:MAX_ARTICLES_TO_CLAUDE]
     print(f"Total unique articles sent to Claude: {len(all_articles)}")
-
+ 
     if not all_articles:
         print("No articles found. Exiting without sending email.")
         return
-
+ 
     prompt = build_claude_prompt(all_articles)
     print("Asking Claude to rank + summarize...")
     raw = call_claude(prompt)
     stories = parse_ranked_stories(raw, all_articles)
     print(f"Claude selected {len(stories)} stories.")
-
+ 
     html = build_email_html(stories)
     print("Sending email...")
     send_email(html)
     print("Done!")
-
-
+ 
+ 
 if __name__ == "__main__":
     main()
